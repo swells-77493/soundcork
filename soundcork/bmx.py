@@ -695,12 +695,15 @@ def _is_valid_station_id(station_id: str) -> bool:
     return bool(_UUID_RE.match(station_id))
 
 
-def get_radiobrowser_station_url(station_id: str) -> Optional[str]:
+RADIOBROWSER_DEFAULT_API = "https://de1.api.radio-browser.info"
+
+
+def get_radiobrowser_station_url(station_id: str, api_url: str = RADIOBROWSER_DEFAULT_API) -> Optional[str]:
     """Helper to get a station URL from RadioBrowser by UUID."""
     if not _is_valid_station_id(station_id):
         logger.warning("Invalid RadioBrowser station ID: %s", station_id)
         return None
-    describe_url = f"https://de1.api.radio-browser.info/xml/stations/byuuid/{station_id}"
+    describe_url = f"{api_url}/xml/stations/byuuid/{station_id}"
     try:
         with urllib.request.urlopen(describe_url) as response:
             contents = response.read()
@@ -716,7 +719,13 @@ def get_radiobrowser_station_url(station_id: str) -> Optional[str]:
     return None
 
 
-def radiobrowser_playback(station_id: str, transcode: bool = False, bmx_server: str = "") -> BmxPlaybackResponse:
+def radiobrowser_playback(
+    station_id: str,
+    transcode: bool = False,
+    bmx_server: str = "",
+    api_url: str = RADIOBROWSER_DEFAULT_API,
+    ssl_downgrade: bool = True,
+) -> BmxPlaybackResponse:
     """Emulate RadioBrowser playback by Resolving to a TuneIn-identical structure."""
     if not _is_valid_station_id(station_id):
         logger.warning("Invalid RadioBrowser station ID: %s", station_id)
@@ -725,7 +734,7 @@ def radiobrowser_playback(station_id: str, transcode: bool = False, bmx_server: 
             audio=Audio(streamUrl="", streams=[], hasPlaylist=False, isRealtime=False),
             name="Invalid Station ID",
         )
-    describe_url = f"https://de1.api.radio-browser.info/xml/stations/byuuid/{station_id}"
+    describe_url = f"{api_url}/xml/stations/byuuid/{station_id}"
     try:
         with urllib.request.urlopen(describe_url) as response:
             contents = response.read()
@@ -753,7 +762,7 @@ def radiobrowser_playback(station_id: str, transcode: bool = False, bmx_server: 
             logger.warning("Rejected unsafe stream URL for station %s: %s", station_id, stream_url)
             stream_url = ""
         # SSL Downgrade: older speakers can't verify modern HTTPS certificates
-        if stream_url and stream_url.startswith("https://"):
+        if ssl_downgrade and stream_url and stream_url.startswith("https://"):
             stream_url = "http://" + stream_url[8:]
 
     # Create SoundTouch-compatible reporting path

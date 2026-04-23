@@ -499,14 +499,15 @@ async def proxy_tunein(path: str, request: Request):
 async def proxy_radiobrowser(path: str, request: Request):
     """Proxy GET requests to the RadioBrowser API and convert to SoundTouch XML."""
     params = dict(request.query_params)
+    rb_api = _settings.radiobrowser_api_url
     try:
         if path == "search.ashx":
             query = params.get("query", "")
-            url = "https://de1.api.radio-browser.info/xml/stations/search"
+            url = f"{rb_api}/xml/stations/search"
             rb_params = {"name": query, "limit": 50}
         elif path == "describe.ashx":
             station_id = params.get("id", "")
-            url = f"https://de1.api.radio-browser.info/xml/stations/byuuid/{station_id}"
+            url = f"{rb_api}/xml/stations/byuuid/{station_id}"
             rb_params = {}
         else:
             return Response(content="Not Found", status_code=404)

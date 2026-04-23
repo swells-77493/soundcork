@@ -1186,7 +1186,13 @@ def bmx_playback(station_id: str, request: Request) -> BmxPlaybackResponse:
     # Detect RadioBrowser UUIDs (they contain hyphens, TuneIn IDs don't)
     if "-" in station_id and len(station_id) > 20:
         transcode = request.query_params.get("transcode", "0") == "1"
-        return radiobrowser_playback(station_id, transcode=transcode, bmx_server=settings.base_url)
+        return radiobrowser_playback(
+            station_id,
+            transcode=transcode,
+            bmx_server=settings.base_url,
+            api_url=settings.radiobrowser_api_url,
+            ssl_downgrade=settings.radiobrowser_ssl_downgrade,
+        )
     return tunein_playback(station_id)
 
 
@@ -1199,7 +1205,13 @@ def bmx_radiobrowser_playback(station_id: str, request: Request) -> BmxPlaybackR
     logger.debug("BMX RadioBrowser Playback for %s (Headers: %s)", station_id, request.headers)
     # The 'transcode' query param tells us if the speaker should be routed to our proxy
     transcode = request.query_params.get("transcode", "0") == "1"
-    return radiobrowser_playback(station_id, transcode=transcode, bmx_server=settings.base_url)
+    return radiobrowser_playback(
+        station_id,
+        transcode=transcode,
+        bmx_server=settings.base_url,
+        api_url=settings.radiobrowser_api_url,
+        ssl_downgrade=settings.radiobrowser_ssl_downgrade,
+    )
 
 
 @app.get("/bmx/radiobrowser/v1/transcode/{station_id}")
@@ -1209,7 +1221,7 @@ async def bmx_radiobrowser_transcode(station_id: str):
 
     from soundcork.bmx import get_radiobrowser_station_url
 
-    url = get_radiobrowser_station_url(station_id)
+    url = get_radiobrowser_station_url(station_id, api_url=settings.radiobrowser_api_url)
     if not url:
         raise HTTPException(status_code=404, detail="Station not found")
 
