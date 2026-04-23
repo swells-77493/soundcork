@@ -86,16 +86,17 @@ class TestSpeakerAllowlist:
         # Initially empty
         ds.list_accounts.return_value = []
         allowlist = SpeakerAllowlist(ds)
-        assert allowlist.is_registered_speaker("192.168.1.50") is False
+        # Use a public IP so is_registered_speaker doesn't match via _is_private_ip
+        assert allowlist.is_registered_speaker("198.51.100.10") is False
 
-        # After adding a device
+        # After adding a device with that public IP
         ds.list_accounts.return_value = ["999"]
         ds.list_devices.return_value = ["DDDD00000004"]
-        ds.get_device_info.return_value = _make_device_info("192.168.1.50")
+        ds.get_device_info.return_value = _make_device_info("198.51.100.10")
 
         allowlist.refresh()
 
-        assert allowlist.is_registered_speaker("192.168.1.50") is True
+        assert allowlist.is_registered_speaker("198.51.100.10") is True
 
     def test_handles_datastore_errors_gracefully(self):
         ds = MagicMock()
