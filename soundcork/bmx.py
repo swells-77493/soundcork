@@ -1,6 +1,9 @@
 import base64
+import ipaddress
 import json
 import logging
+import re
+import socket
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -676,9 +679,6 @@ def _is_safe_stream_url(url: str) -> bool:
         if parsed.scheme not in ("http", "https"):
             return False
         # Resolve hostname and check for private/loopback/link-local IPs
-        import ipaddress
-        import socket
-
         for info in socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM):
             addr = ipaddress.ip_address(info[4][0])
             if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
@@ -688,8 +688,18 @@ def _is_safe_stream_url(url: str) -> bool:
     return True
 
 
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+
+
+def _is_valid_station_id(station_id: str) -> bool:
+    return bool(_UUID_RE.match(station_id))
+
+
 def get_radiobrowser_station_url(station_id: str) -> Optional[str]:
     """Helper to get a station URL from RadioBrowser by UUID."""
+    if not _is_valid_station_id(station_id):
+        logger.warning("Invalid RadioBrowser station ID: %s", station_id)
+        return None
     describe_url = f"https://de1.api.radio-browser.info/xml/stations/byuuid/{station_id}"
     try:
         with urllib.request.urlopen(describe_url) as response:
@@ -708,6 +718,13 @@ def get_radiobrowser_station_url(station_id: str) -> Optional[str]:
 
 def radiobrowser_playback(station_id: str, transcode: bool = False, bmx_server: str = "") -> BmxPlaybackResponse:
     """Emulate RadioBrowser playback by Resolving to a TuneIn-identical structure."""
+    if not _is_valid_station_id(station_id):
+        logger.warning("Invalid RadioBrowser station ID: %s", station_id)
+        return BmxPlaybackResponse(
+            links={},
+            audio=Audio(streamUrl="", streams=[], hasPlaylist=False, isRealtime=False),
+            name="Invalid Station ID",
+        )
     describe_url = f"https://de1.api.radio-browser.info/xml/stations/byuuid/{station_id}"
     try:
         with urllib.request.urlopen(describe_url) as response:
