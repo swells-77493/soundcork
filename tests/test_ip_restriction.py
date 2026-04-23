@@ -134,7 +134,7 @@ class TestBoseProtocolIPRestriction:
         assert resp.status_code != 403
 
     def test_xff_all_unknown_public_ips_blocked(self, client):
-        """All XFF entries are unknown public IPs — request must be blocked."""
+        """When every XFF entry is an unknown public IP, the request is blocked."""
         resp = client.get(
             "/marge/streaming/sourceproviders",
             headers={"X-Forwarded-For": "203.0.113.1, 203.0.113.99"},

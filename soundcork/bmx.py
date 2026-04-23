@@ -665,6 +665,29 @@ def play_custom_stream(data: str) -> BmxPlaybackResponse:
     return resp
 
 
+def _is_safe_stream_url(url: str) -> bool:
+    """Reject URLs targeting internal/private networks (SSRF protection)."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        hostname = parsed.hostname or ""
+        if not hostname:
+            return False
+        # Block non-http(s) schemes
+        if parsed.scheme not in ("http", "https"):
+            return False
+        # Resolve hostname and check for private/loopback/link-local IPs
+        import ipaddress
+        import socket
+
+        for info in socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM):
+            addr = ipaddress.ip_address(info[4][0])
+            if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+                return False
+    except Exception:
+        return False
+    return True
+
+
 def get_radiobrowser_station_url(station_id: str) -> Optional[str]:
     """Helper to get a station URL from RadioBrowser by UUID."""
     describe_url = f"https://de1.api.radio-browser.info/xml/stations/byuuid/{station_id}"
@@ -674,7 +697,10 @@ def get_radiobrowser_station_url(station_id: str) -> Optional[str]:
         rb_root = ET.fromstring(contents)
         station = rb_root.find("station")
         if station is not None:
-            return station.get("url_resolved") or station.get("url")
+            url = station.get("url_resolved") or station.get("url")
+            if url and _is_safe_stream_url(url):
+                return url
+            logger.warning("Rejected unsafe stream URL for station %s: %s", station_id, url)
     except Exception as e:
         logger.error(f"Error resolving RadioBrowser station {station_id}: {e}")
     return None
@@ -706,6 +732,9 @@ def radiobrowser_playback(station_id: str, transcode: bool = False, bmx_server: 
         stream_url = f"{bmx_server}/bmx/radiobrowser/v1/transcode/{station_id}"
     else:
         stream_url = station.get("url_resolved") or station.get("url", "")
+        if stream_url and not _is_safe_stream_url(stream_url):
+            logger.warning("Rejected unsafe stream URL for station %s: %s", station_id, stream_url)
+            stream_url = ""
         # SSL Downgrade: older speakers can't verify modern HTTPS certificates
         if stream_url and stream_url.startswith("https://"):
             stream_url = "http://" + stream_url[8:]
