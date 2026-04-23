@@ -18,6 +18,8 @@ def _make_device_info(ip: str, device_id: str = "AABBCCDDEEFF") -> DeviceInfo:
         firmware_version="27.0",
         ip_address=ip,
         name="Test Speaker",
+        created_on="2026-01-01T00:00:00",
+        updated_on="2026-01-01T00:00:00",
     )
 
 

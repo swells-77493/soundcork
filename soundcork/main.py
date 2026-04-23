@@ -154,7 +154,9 @@ app.add_middleware(
 
 from fastapi.staticfiles import StaticFiles as _StaticFiles
 
-app.mount("/static", _StaticFiles(directory="static"), name="static")
+_static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.isdir(_static_dir):
+    app.mount("/static", _StaticFiles(directory=_static_dir), name="static")
 
 from soundcork.mgmt import router as mgmt_router
 from soundcork.proxy import ProxyMiddleware

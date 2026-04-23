@@ -39,15 +39,11 @@ known-first-party = ["soundcork"]
 
 [tool.pytest.ini_options]
 filterwarnings = ["error::SyntaxWarning"]
+minversion = "9.0"
+addopts = ["-ra", "--cov=soundcork", "--cov-report=term-missing:skip-covered"]
+testpaths = ["tests"]
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]
 
 [tool.pydantic-mypy]
-
-[tool.pytest]
-minversion = "9.0"
-addopts = ["-ra", "--cov=soundcork", "--cov-report=term-missing:skip-covered"]
-testpaths = [
-    "tests",
-]
