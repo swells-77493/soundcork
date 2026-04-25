@@ -3,8 +3,9 @@ import ipaddress
 import json
 import logging
 import os
+import socket
 import xml.etree.ElementTree as ET
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 import websockets
@@ -58,8 +59,11 @@ def _register_radiobrowser_favicon(url: str) -> None:
     if not url:
         return
     try:
-        hostname = urlparse(url).hostname
-        if hostname and not _is_private_ip(hostname):
+        parsed = urlparse(url)
+        hostname = (parsed.hostname or "").lower()
+        if parsed.scheme not in ("http", "https"):
+            return
+        if hostname and not _is_private_ip(hostname) and not _hostname_resolves_to_blocked_ip(hostname):
             _radiobrowser_image_domains.add(hostname)
     except Exception:
         pass
@@ -87,20 +91,40 @@ def _is_private_ip(hostname: str) -> bool:
         return False
 
 
+def _hostname_resolves_to_blocked_ip(hostname: str) -> bool:
+    """Return True when DNS for hostname points to non-routable/internal IP ranges."""
+    try:
+        infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except Exception:
+        return True
+
+    for info in infos:
+        try:
+            addr = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return True
+        if (
+            addr.is_private
+            or addr.is_loopback
+            or addr.is_link_local
+            or addr.is_reserved
+            or addr.is_multicast
+            or addr.is_unspecified
+        ):
+            return True
+    return False
+
+
 def _is_allowed_image_url(url: str) -> bool:
     """Check if a URL is on an allowed CDN domain and not a private IP."""
     try:
         parsed = urlparse(url)
-        hostname = parsed.hostname or ""
-        if _is_private_ip(hostname):
+        hostname = (parsed.hostname or "").lower()
+        if parsed.scheme not in ("http", "https") or not hostname:
             return False
-        # Allow known CDN domains, RadioBrowser favicon domains discovered
-        # during search, and any domain serving common image file extensions
-        # (these URLs originate from preset containerArt saved by the user).
+        if _is_private_ip(hostname) or _hostname_resolves_to_blocked_ip(hostname):
+            return False
         if hostname in _IMAGE_PROXY_ALLOWED_DOMAINS or hostname in _radiobrowser_image_domains:
-            return True
-        path_lower = parsed.path.lower()
-        if any(path_lower.endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico")):
             return True
         return False
     except Exception:
@@ -396,7 +420,7 @@ async def proxy_speaker_post(ip: str, path: str, request: Request):
     if not _get_speaker_allowlist().is_registered_speaker(ip):
         return JSONResponse({"detail": "Forbidden: unregistered speaker IP"}, status_code=403)
     body = await request.body()
-    logger.debug("Proxying POST to speaker %s at /%s: %s", ip, path, body.decode("utf-8", errors="replace"))
+    logger.debug("Proxying POST to speaker %s at /%s (body-bytes=%d)", ip, path, len(body))
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
@@ -428,6 +452,7 @@ _TRANSPARENT_1X1 = (
     b"\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01"
     b"\r\n\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
 )
+_REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 
 
 @router.get("/api/image")
@@ -438,8 +463,20 @@ async def proxy_image(url: str):
     if not _is_allowed_image_url(url):
         return JSONResponse({"detail": "Forbidden: URL domain not allowed"}, status_code=403)
     try:
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            resp = await client.get(url, timeout=SPEAKER_TIMEOUT)
+        current_url = url
+        async with httpx.AsyncClient(follow_redirects=False) as client:
+            for _ in range(5):
+                if not _is_allowed_image_url(current_url):
+                    return JSONResponse({"detail": "Forbidden: URL domain not allowed"}, status_code=403)
+                resp = await client.get(current_url, timeout=SPEAKER_TIMEOUT)
+                if resp.status_code not in _REDIRECT_STATUS_CODES:
+                    break
+                location = resp.headers.get("location")
+                if not location:
+                    break
+                current_url = urljoin(current_url, location)
+            else:
+                return Response(content="Too many redirects", status_code=400)
         if resp.status_code >= 400:
             # Upstream refused — return transparent pixel so <img> doesn't break
             return Response(

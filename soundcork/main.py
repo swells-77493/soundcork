@@ -1,3 +1,4 @@
+import ipaddress
 import logging
 import os
 import re
@@ -226,6 +227,14 @@ async def log_unknown_requests(request: Request, call_next):
 _EXEMPT_PREFIXES = ("/webui", "/mgmt", "/docs", "/openapi.json", "/auth")
 
 
+def _parse_ip_literal(value: str) -> str | None:
+    """Return a normalized IP literal, or None if the input is not an IP."""
+    try:
+        return str(ipaddress.ip_address(value.strip()))
+    except ValueError:
+        return None
+
+
 @app.middleware("http")
 async def speaker_ip_restriction(request: Request, call_next):
     """Block Bose protocol requests from unknown IPs."""
@@ -235,51 +244,30 @@ async def speaker_ip_restriction(request: Request, call_next):
     if path == "/" or any(path.startswith(p) for p in _EXEMPT_PREFIXES):
         return await call_next(request)
 
-    # Determine client IP from proxy headers.
-    # 1. CF-Connecting-IP is set by Cloudflare with the true client IP.
-    # 2. X-Forwarded-For: try the first entry (original client) then last
-    #    (works for Traefik-style append).  Accept if either is allowed.
-    # 3. Fall back to the direct connection IP.
-    cf_ip = request.headers.get("cf-connecting-ip", "").strip()
-    forwarded = request.headers.get("x-forwarded-for")
-    if cf_ip:
-        client_ip = cf_ip
-    elif forwarded:
-        parts = [p.strip() for p in forwarded.split(",")]
-        # Try first (original client) — if allowed, use it; else last (proxy-appended).
-        client_ip = parts[0]
-    else:
-        client_ip = request.client.host if request.client else ""
+    # Trust forwarding headers only when the direct peer is an explicitly trusted proxy.
+    # For X-Forwarded-For we use the right-most IP, which is the address appended by
+    # the trusted proxy and cannot be injected by clients.
+    direct_ip = request.client.host if request.client else ""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    client_ip = direct_ip
+
+    trusted_proxies = {ip.strip() for ip in settings.trusted_proxy_ips.split(",") if ip.strip()}
+    if direct_ip in trusted_proxies and forwarded:
+        for part in reversed(forwarded.split(",")):
+            parsed = _parse_ip_literal(part)
+            if parsed:
+                client_ip = parsed
+                break
 
     allowlist = get_speaker_allowlist()
-    # Build a set of trusted proxy IPs from config
-    _trusted = set()
-    _raw = settings.trusted_proxy_ips.strip()
-    if _raw:
-        _trusted = {ip.strip() for ip in _raw.split(",") if ip.strip()}
-    # Also try the first X-Forwarded-For entry if the direct IP isn't allowed
-    if not allowlist.is_allowed(client_ip) and forwarded:
-        parts = [p.strip() for p in forwarded.split(",")]
-        for part in parts:
-            if allowlist.is_allowed(part):
-                client_ip = part
-                break
-    # As a last resort, check request.client.host if we used a header
-    if not allowlist.is_allowed(client_ip):
-        direct_ip = request.client.host if request.client else ""
-        if direct_ip != client_ip and allowlist.is_allowed(direct_ip):
-            client_ip = direct_ip
-    # Allow trusted proxy/tunnel IPs (e.g. Cloudflare tunnel)
-    if not allowlist.is_allowed(client_ip) and client_ip in _trusted:
-        return await call_next(request)
     if not allowlist.is_allowed(client_ip):
         logger.warning(
-            "Blocked %s %s from %s (not a registered speaker, xff=%s, cf=%s)",
+            "Blocked %s %s from %s (direct=%s, xff=%s)",
             request.method,
             path,
             client_ip,
+            direct_ip,
             forwarded or "",
-            cf_ip,
         )
         return JSONResponse(
             {"detail": "Forbidden: unknown speaker IP"},
@@ -473,12 +461,10 @@ async def bmx_tunein_report(request: Request):
     body = await request.body()
     if body:
         content_type = request.headers.get("content-type", "")
-        headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
         logger.info(
-            "STUB bmx/tunein/report content-type=%s headers=%s body=%s",
+            "STUB bmx/tunein/report content-type=%s body-bytes=%d",
             content_type,
-            headers,
-            body[:2000].decode("utf-8", errors="replace"),
+            len(body),
         )
     return Response(status_code=200)
 
@@ -493,12 +479,10 @@ async def bmx_radiobrowser_report(request: Request):
     body = await request.body()
     if body:
         content_type = request.headers.get("content-type", "")
-        headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
         logger.info(
-            "STUB bmx/radiobrowser/report content-type=%s headers=%s body=%s",
+            "STUB bmx/radiobrowser/report content-type=%s body-bytes=%d",
             content_type,
-            headers,
-            body[:2000].decode("utf-8", errors="replace"),
+            len(body),
         )
     return Response(status_code=200)
 

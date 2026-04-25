@@ -42,12 +42,15 @@ def client(allowlist):
     import soundcork.main as main_mod
 
     # Inject our test allowlist into the module global
-    original = main_mod._speaker_allowlist
+    original_allowlist = main_mod._speaker_allowlist
+    original_trusted_proxy_ips = main_mod.settings.trusted_proxy_ips
     main_mod._speaker_allowlist = allowlist
+    main_mod.settings.trusted_proxy_ips = "testclient"
     try:
         yield TestClient(main_mod.app)
     finally:
-        main_mod._speaker_allowlist = original
+        main_mod._speaker_allowlist = original_allowlist
+        main_mod.settings.trusted_proxy_ips = original_trusted_proxy_ips
 
 
 def _login(client) -> str:
@@ -149,6 +152,40 @@ class TestBoseProtocolIPRestriction:
         )
         assert resp.status_code != 403
 
+    def test_xff_spoofing_private_ip_first_is_blocked(self, client):
+        """Spoofed private IP entries must not bypass checks."""
+        resp = client.get(
+            "/marge/streaming/sourceproviders",
+            headers={"X-Forwarded-For": "192.168.1.50, 203.0.113.99"},
+        )
+        assert resp.status_code == 403
+
+    def test_cf_connecting_ip_ignored(self, client):
+        """CF-Connecting-IP should not override XFF-derived client identity."""
+        resp = client.get(
+            "/marge/streaming/sourceproviders",
+            headers={
+                "X-Forwarded-For": "203.0.113.99",
+                "CF-Connecting-IP": "192.168.1.143",
+            },
+        )
+        assert resp.status_code == 403
+
+    def test_forwarded_headers_ignored_for_untrusted_proxy(self, client):
+        """Forwarding headers are ignored when the direct peer is untrusted."""
+        import soundcork.main as main_mod
+
+        original_trusted_proxy_ips = main_mod.settings.trusted_proxy_ips
+        main_mod.settings.trusted_proxy_ips = ""
+        try:
+            resp = client.get(
+                "/marge/streaming/sourceproviders",
+                headers={"X-Forwarded-For": "192.168.1.143"},
+            )
+        finally:
+            main_mod.settings.trusted_proxy_ips = original_trusted_proxy_ips
+        assert resp.status_code == 403
+
 
 class TestWebuiSpeakerProxyRestriction:
     """The webui speaker proxy should only allow proxying to registered speaker IPs.
@@ -204,6 +241,13 @@ class TestWebuiImageProxyRestriction:
         resp = authed_client.get(
             "/webui/api/image",
             params={"url": "https://evil.com/steal-data"},
+        )
+        assert resp.status_code == 403
+
+    def test_image_proxy_blocks_extension_bypass(self, authed_client):
+        resp = authed_client.get(
+            "/webui/api/image",
+            params={"url": "https://evil.com/logo.png"},
         )
         assert resp.status_code == 403
 

@@ -41,7 +41,7 @@ class Settings(BaseSettings):
 
     # Downgrade HTTPS stream URLs to HTTP for older speakers that can't
     # verify modern TLS certificates.  Set to False to keep original URLs.
-    radiobrowser_ssl_downgrade: bool = True
+    radiobrowser_ssl_downgrade: bool = False
 
     # ZeroConf primer: periodic push of Spotify tokens to speakers
     # Disable if speakers self-prime at boot via /mnt/nv/rc.local
