@@ -77,6 +77,12 @@ Then SSH in:
 ssh root@<speaker-ip>
 ```
 
+If your SSH client rejects the connection due to legacy key algorithms, use:
+
+```sh
+ssh -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa root@<speaker-ip>
+```
+
 No password is required.
 
 ### Make SSH Persistent Across Reboots
@@ -176,12 +182,16 @@ vi /opt/Bose/etc/SoundTouchSdkPrivateCfg.xml
 
 Change all 4 server URLs to point to your SoundCork instance:
 
-| Server  | Before                              | After                         |
-|---------|-------------------------------------|-------------------------------|
-| marge   | `https://streaming.bose.com`        | `https://your-soundcork-server` |
-| bmx     | `https://content.api.bose.io`       | `https://your-soundcork-server` |
-| updates | `https://worldwide.bose.com`        | `https://your-soundcork-server` |
-| stats   | `https://events.api.bosecm.com`     | `https://your-soundcork-server` |
+| Server  | Before                              | After                                                  |
+|---------|-------------------------------------|--------------------------------------------------------|
+| marge   | `https://streaming.bose.com`        | `http://your-soundcork-server/marge`                   |
+| bmx     | `https://content.api.bose.io`       | `http://your-soundcork-server/bmx/registry/v1/services`|
+| updates | `https://worldwide.bose.com`        | `http://your-soundcork-server/updates/soundtouch`      |
+| stats   | `https://events.api.bosecm.com`     | `http://your-soundcork-server`                         |
+
+> **Important**: The marge and bmx URLs require specific path suffixes —
+> SoundCork uses these prefixes in its internal routing. Without them, the
+> speaker's requests will return 404 and sources like TuneIn will not register.
 
 Reboot the speaker for changes to take effect. The speaker will now send all
 cloud traffic to your SoundCork server.
