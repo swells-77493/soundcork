@@ -56,11 +56,13 @@ from soundcork.marge import (
 )
 from soundcork.miniapp import get_miniapp_router
 from soundcork.model import (
+    Audio,
     BmxNavResponse,
     BmxPlaybackResponse,
     BmxPodcastInfoResponse,
     BmxResponse,
     BoseXMLResponse,
+    Stream,
 )
 from soundcork.ui.speakers import Speakers
 from soundcork.utils import strip_element_text
@@ -1217,6 +1219,113 @@ def custom_stream_playback(request: Request) -> BmxPlaybackResponse:
 @app.get("/bmx/orion/v1/playback/station/{data}", tags=["bmx"])
 def bmx_orion_playback(data: str) -> BmxPlaybackResponse:
     return play_custom_stream(data)
+
+
+# ---------------------------------------------------------------------------
+# SoundCloud — HLS rewriting proxy
+# ---------------------------------------------------------------------------
+# Resolved tracks are cached in-memory so the speaker can fetch segments
+# without re-resolving on every request.  Cache entries expire naturally when
+# the CDN-signed URLs in them become invalid (~2 h).
+
+import hashlib
+import time
+
+from soundcork.soundcloud_service import fetch_segment, resolve_track, rewrite_m3u8
+
+_sc_cache: dict[str, dict] = {}
+_SC_CACHE_TTL = 3600  # 1 hour
+
+
+def _sc_track_id(url: str) -> str:
+    return hashlib.sha256(url.encode()).hexdigest()[:16]
+
+
+def _sc_get_or_resolve(soundcloud_url: str) -> tuple[str, dict]:
+    track_id = _sc_track_id(soundcloud_url)
+    cached = _sc_cache.get(track_id)
+    if cached and time.time() - cached["resolved_at"] < _SC_CACHE_TTL:
+        return track_id, cached
+    info = resolve_track(soundcloud_url)
+    info["resolved_at"] = time.time()
+    info["soundcloud_url"] = soundcloud_url
+    _sc_cache[track_id] = info
+    return track_id, info
+
+
+@app.get("/soundcloud/resolve", tags=["soundcloud"])
+def sc_resolve(url: str, request: Request):
+    """Resolve a SoundCloud URL and return metadata + playback location."""
+    try:
+        track_id, info = _sc_get_or_resolve(url)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    base_url = str(request.base_url).rstrip("/")
+    playlist_url = f"{base_url}/soundcloud/playlist/{track_id}.m3u8"
+    return {
+        "trackId": track_id,
+        "title": info["title"],
+        "uploader": info["uploader"],
+        "duration": info["duration"],
+        "thumbnail": info["thumbnail"],
+        "playlistUrl": playlist_url,
+        "segmentCount": len(info["segments"]),
+    }
+
+
+@app.get("/soundcloud/playlist/{track_id}.m3u8", tags=["soundcloud"])
+def sc_playlist(track_id: str, request: Request):
+    """Serve a rewritten HLS playlist with short proxy segment URLs."""
+    info = _sc_cache.get(track_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Track not resolved — call /soundcloud/resolve first")
+    base_url = str(request.base_url).rstrip("/")
+    m3u8 = rewrite_m3u8(track_id, base_url, info["durations"], len(info["segments"]))
+    return Response(content=m3u8, media_type="application/vnd.apple.mpegurl")
+
+
+@app.get("/soundcloud/seg/{track_id}/{index}", tags=["soundcloud"])
+def sc_segment(track_id: str, index: int):
+    """Proxy a single audio segment from SoundCloud's CDN."""
+    info = _sc_cache.get(track_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Track not resolved")
+    if index < 0 or index >= len(info["segments"]):
+        raise HTTPException(status_code=404, detail="Segment index out of range")
+    try:
+        data = fetch_segment(info["segments"][index])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return Response(content=data, media_type="audio/mpeg")
+
+
+@app.get("/soundcloud/playback/{track_id}", tags=["soundcloud"])
+def sc_bmx_playback(track_id: str, request: Request) -> BmxPlaybackResponse:
+    """BMX playback response for SoundCloud — speaker calls this to get the stream URL."""
+    info = _sc_cache.get(track_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Track not resolved")
+    base_url = str(request.base_url).rstrip("/")
+    playlist_url = f"{base_url}/soundcloud/playlist/{track_id}.m3u8"
+    stream_list = [
+        Stream(
+            hasPlaylist=True,
+            isRealtime=True,
+            streamUrl=playlist_url,
+        )
+    ]
+    audio = Audio(
+        hasPlaylist=True,
+        isRealtime=True,
+        streamUrl=playlist_url,
+        streams=stream_list,
+    )
+    return BmxPlaybackResponse(
+        audio=audio,
+        imageUrl=info.get("thumbnail", ""),
+        name=info.get("title", "SoundCloud"),
+        streamType="liveRadio",
+    )
 
 
 @app.get("/media/{filename}", tags=["bmx"])
