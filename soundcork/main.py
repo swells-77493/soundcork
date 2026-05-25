@@ -1299,6 +1299,7 @@ def sc_playlist(track_id: str, request: Request):
     return Response(content=m3u8, media_type="audio/mpegurl")
 
 
+@app.head("/soundcloud/seg/{track_id}/{index}", tags=["soundcloud"])
 @app.get("/soundcloud/seg/{track_id}/{index}", tags=["soundcloud"])
 def sc_segment(track_id: str, index: int):
     """Proxy a single audio segment from SoundCloud's CDN."""
