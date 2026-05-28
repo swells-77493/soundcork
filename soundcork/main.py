@@ -225,8 +225,15 @@ async def log_unknown_requests(request: Request, call_next):
 # Paths starting with /webui, /mgmt, /docs, /openapi.json, or / (root) are exempt.
 
 _EXEMPT_PREFIXES = (
-    "/webui", "/mgmt", "/docs", "/openapi.json", "/auth",
-    "/soundcloud/playlist/", "/soundcloud/seg/", "/soundcloud/init/", "/soundcloud/playback/",
+    "/webui",
+    "/mgmt",
+    "/docs",
+    "/openapi.json",
+    "/auth",
+    "/soundcloud/playlist/",
+    "/soundcloud/seg/",
+    "/soundcloud/init/",
+    "/soundcloud/playback/",
 )
 
 

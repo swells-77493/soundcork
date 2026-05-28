@@ -496,8 +496,6 @@ async def proxy_soundcloud_resolve(url: str):
         return Response(content="SoundCloud resolve failed", status_code=502)
 
 
-
-
 # --- WebSocket Proxy ---
 # Relays WebSocket connections between the browser and speaker port 8080.
 # The speaker sends real-time XML updates for volume, now-playing, and zones.
