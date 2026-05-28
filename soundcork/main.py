@@ -1146,6 +1146,7 @@ def bmx_services() -> BmxResponse:
 def bmx_playback(station_id: str) -> BmxPlaybackResponse:
     if station_id.startswith("sc-"):
         track_id = station_id[3:]
+        _sc_validate_track_id(track_id)
         info = _sc_ensure_cached(track_id)
         if not info:
             raise HTTPException(status_code=404, detail="Track not resolved")

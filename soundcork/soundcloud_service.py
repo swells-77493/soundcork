@@ -32,8 +32,8 @@ def _validate_cdn_url(url: str) -> None:
 
 
 def resolve_track(url: str) -> dict:
-    _validate_soundcloud_url(url)
     """Resolve a SoundCloud URL to track metadata and HLS playlist info."""
+    _validate_soundcloud_url(url)
     ydl_opts = {
         "format": "bestaudio[acodec=mp3][protocol=m3u8_native]/hls_aac_96k/best",
         "quiet": True,
@@ -43,6 +43,7 @@ def resolve_track(url: str) -> dict:
         info = ydl.extract_info(url, download=False)
 
     m3u8_url = info["url"]
+    _validate_cdn_url(m3u8_url)
     raw_m3u8 = urllib.request.urlopen(m3u8_url, timeout=10).read().decode()
 
     segments = []
