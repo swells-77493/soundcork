@@ -43,6 +43,7 @@ _IMAGE_PROXY_ALLOWED_DOMAINS = frozenset(
         "i.scdn.co",
         "mosaic.scdn.co",
         "seed-mix-image.spotifycdn.com",
+        "i1.sndcdn.com",
     }
 )
 
@@ -465,6 +466,34 @@ async def proxy_tunein(path: str, request: Request):
     except (httpx.ConnectError, httpx.TimeoutException) as e:
         logger.warning(f"TuneIn proxy error: {e}")
         return Response(content="TuneIn unreachable", status_code=502)
+
+
+# --- SoundCloud Proxy API ---
+# Proxies /soundcloud/resolve through the webui so the browser
+# doesn't need to hit the backend directly (avoids CORS).
+
+_SC_RESOLVE_TIMEOUT = 35.0  # yt-dlp can be slow
+
+
+@router.get("/api/soundcloud/resolve")
+async def proxy_soundcloud_resolve(url: str):
+    """Proxy SoundCloud resolve requests to the main app."""
+    base = _settings.base_url or "http://localhost:8000"
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{base}/soundcloud/resolve",
+                params={"url": url},
+                timeout=_SC_RESOLVE_TIMEOUT,
+            )
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers={"Content-Type": resp.headers.get("content-type", "application/json")},
+        )
+    except (httpx.ConnectError, httpx.TimeoutException) as e:
+        logger.warning(f"SoundCloud resolve proxy error: {e}")
+        return Response(content="SoundCloud resolve failed", status_code=502)
 
 
 # --- WebSocket Proxy ---

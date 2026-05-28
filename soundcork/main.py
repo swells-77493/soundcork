@@ -56,11 +56,13 @@ from soundcork.marge import (
 )
 from soundcork.miniapp import get_miniapp_router
 from soundcork.model import (
+    Audio,
     BmxNavResponse,
     BmxPlaybackResponse,
     BmxPodcastInfoResponse,
     BmxResponse,
     BoseXMLResponse,
+    Stream,
 )
 from soundcork.ui.speakers import Speakers
 from soundcork.utils import strip_element_text
@@ -222,7 +224,17 @@ async def log_unknown_requests(request: Request, call_next):
 # Bose protocol endpoints are only accessible from registered speaker IPs.
 # Paths starting with /webui, /mgmt, /docs, /openapi.json, or / (root) are exempt.
 
-_EXEMPT_PREFIXES = ("/webui", "/mgmt", "/docs", "/openapi.json", "/auth")
+_EXEMPT_PREFIXES = (
+    "/webui",
+    "/mgmt",
+    "/docs",
+    "/openapi.json",
+    "/auth",
+    "/soundcloud/playlist/",
+    "/soundcloud/seg/",
+    "/soundcloud/init/",
+    "/soundcloud/playback/",
+)
 
 
 @app.middleware("http")
@@ -1139,6 +1151,23 @@ def bmx_services() -> BmxResponse:
     tags=["bmx"],
 )
 def bmx_playback(station_id: str) -> BmxPlaybackResponse:
+    if station_id.startswith("sc-"):
+        track_id = station_id[3:]
+        _sc_validate_track_id(track_id)
+        info = _sc_ensure_cached(track_id)
+        if not info:
+            raise HTTPException(status_code=404, detail="Track not resolved")
+        info["cursor"] = 0
+        seg_base = os.environ.get("SOUNDCLOUD_SEG_BASE_URL", settings.base_url.rstrip("/"))
+        playlist_url = f"{seg_base}/soundcloud/playlist/{track_id}.m3u8"
+        stream_list = [Stream(hasPlaylist=True, isRealtime=True, streamUrl=playlist_url)]
+        audio = Audio(hasPlaylist=True, isRealtime=True, streamUrl=playlist_url, streams=stream_list)
+        return BmxPlaybackResponse(
+            audio=audio,
+            imageUrl=info.get("thumbnail", ""),
+            name=info.get("title", "SoundCloud"),
+            streamType="liveRadio",
+        )
     return tunein_playback(station_id)
 
 
@@ -1217,6 +1246,214 @@ def custom_stream_playback(request: Request) -> BmxPlaybackResponse:
 @app.get("/bmx/orion/v1/playback/station/{data}", tags=["bmx"])
 def bmx_orion_playback(data: str) -> BmxPlaybackResponse:
     return play_custom_stream(data)
+
+
+# ---------------------------------------------------------------------------
+# SoundCloud — HLS rewriting proxy
+# ---------------------------------------------------------------------------
+# Resolved tracks are cached in-memory so the speaker can fetch segments
+# without re-resolving on every request.  Cache entries expire naturally when
+# the CDN-signed URLs in them become invalid (~2 h).
+
+import hashlib
+import json
+import re as _re_mod
+import threading
+import time
+
+from soundcork.soundcloud_service import build_m3u8_window, fetch_segment, resolve_track
+
+_sc_cache: dict[str, dict] = {}
+_SC_CACHE_TTL = 3600  # 1 hour
+_SC_URL_MAP_FILE = os.path.join(os.environ.get("data_dir", "."), "sc_urls.json")
+_sc_file_lock = threading.Lock()
+_SC_TRACK_ID_RE = _re_mod.compile(r"^[0-9a-f]{16}$")
+
+
+def _sc_track_id(url: str) -> str:
+    return hashlib.sha256(url.encode()).hexdigest()[:16]
+
+
+def _sc_validate_track_id(track_id: str) -> None:
+    if not _SC_TRACK_ID_RE.match(track_id):
+        raise HTTPException(status_code=400, detail="Invalid track ID")
+
+
+def _sc_load_url_map() -> dict[str, str]:
+    try:
+        with open(_SC_URL_MAP_FILE) as f:
+            return json.load(f)
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+def _sc_save_url(track_id: str, url: str) -> None:
+    with _sc_file_lock:
+        url_map = _sc_load_url_map()
+        url_map[track_id] = url
+        dirname = os.path.dirname(_SC_URL_MAP_FILE)
+        if dirname:
+            os.makedirs(dirname, exist_ok=True)
+        with open(_SC_URL_MAP_FILE, "w") as f:
+            json.dump(url_map, f)
+
+
+def _sc_get_or_resolve(soundcloud_url: str) -> tuple[str, dict]:
+    track_id = _sc_track_id(soundcloud_url)
+    cached = _sc_cache.get(track_id)
+    if cached and time.time() - cached["resolved_at"] < _SC_CACHE_TTL:
+        return track_id, cached
+    info = resolve_track(soundcloud_url)
+    info["resolved_at"] = time.time()
+    info["soundcloud_url"] = soundcloud_url
+    _sc_cache[track_id] = info
+    _sc_save_url(track_id, soundcloud_url)
+    return track_id, info
+
+
+def _sc_ensure_cached(track_id: str) -> dict | None:
+    """Return cached info, auto-resolving from persisted URL if needed."""
+    info = _sc_cache.get(track_id)
+    if info and time.time() - info["resolved_at"] < _SC_CACHE_TTL:
+        return info
+    url_map = _sc_load_url_map()
+    url = url_map.get(track_id)
+    if not url:
+        return None
+    logger.info("Auto-resolving SoundCloud track %s from persisted URL", track_id)
+    info = resolve_track(url)
+    info["resolved_at"] = time.time()
+    info["soundcloud_url"] = url
+    _sc_cache[track_id] = info
+    return info
+
+
+@app.get("/soundcloud/resolve", tags=["soundcloud"])
+def sc_resolve(url: str, request: Request):
+    """Resolve a SoundCloud URL and return metadata + playback location."""
+    try:
+        track_id, info = _sc_get_or_resolve(url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("SoundCloud resolve failed for URL")
+        raise HTTPException(status_code=502, detail="Failed to resolve SoundCloud URL")
+    base_url = settings.base_url.rstrip("/")
+    playlist_url = f"{base_url}/soundcloud/playlist/{track_id}.m3u8"
+    return {
+        "trackId": track_id,
+        "title": info["title"],
+        "uploader": info["uploader"],
+        "duration": info["duration"],
+        "thumbnail": info["thumbnail"],
+        "playlistUrl": playlist_url,
+        "segmentCount": len(info["segments"]),
+    }
+
+
+@app.get("/soundcloud/playlist/{track_id}.m3u8", tags=["soundcloud"])
+def sc_playlist(track_id: str, request: Request):
+    """Serve a sliding-window HLS playlist with short proxy segment URLs."""
+    _sc_validate_track_id(track_id)
+    info = _sc_ensure_cached(track_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Track not resolved")
+    seg_base = os.environ.get("SOUNDCLOUD_SEG_BASE_URL", settings.base_url.rstrip("/"))
+    m3u8 = build_m3u8_window(track_id, seg_base, info)
+    return Response(content=m3u8, media_type="audio/mpegurl")
+
+
+@app.head("/soundcloud/seg/{track_id}/{index}", tags=["soundcloud"])
+def sc_segment_head(track_id: str, index: int):
+    """HEAD for segment — returns headers without fetching from CDN."""
+    _sc_validate_track_id(track_id)
+    info = _sc_ensure_cached(track_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Track not resolved")
+    if index < 0 or index >= len(info["segments"]):
+        raise HTTPException(status_code=404, detail="Segment index out of range")
+    return Response(media_type="audio/mpeg")
+
+
+@app.get("/soundcloud/seg/{track_id}/{index}", tags=["soundcloud"])
+def sc_segment(track_id: str, index: int):
+    """Proxy a single audio segment from SoundCloud's CDN."""
+    _sc_validate_track_id(track_id)
+    info = _sc_ensure_cached(track_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Track not resolved")
+    segments = info["segments"]
+    if index < 0 or index >= len(segments):
+        raise HTTPException(status_code=404, detail="Segment index out of range")
+    if index >= info.get("cursor", 0):
+        info["cursor"] = index + 1
+    try:
+        _, cdn_url = segments[index]
+        data = fetch_segment(cdn_url)
+    except Exception:
+        logger.exception("Failed to fetch segment %d for track %s", index, track_id)
+        raise HTTPException(status_code=502, detail="Failed to fetch segment")
+    return Response(content=data, media_type="audio/mpeg")
+
+
+@app.head("/soundcloud/init/{track_id}", tags=["soundcloud"])
+def sc_init_segment_head(track_id: str):
+    """HEAD for init segment — returns headers without fetching from CDN."""
+    _sc_validate_track_id(track_id)
+    info = _sc_ensure_cached(track_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Track not resolved")
+    if not info.get("init_url"):
+        raise HTTPException(status_code=404, detail="No init segment for this track")
+    return Response(media_type="video/mp4")
+
+
+@app.get("/soundcloud/init/{track_id}", tags=["soundcloud"])
+def sc_init_segment(track_id: str):
+    """Proxy the HLS init segment (EXT-X-MAP) for AAC fMP4 streams."""
+    _sc_validate_track_id(track_id)
+    info = _sc_ensure_cached(track_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Track not resolved")
+    init_url = info.get("init_url")
+    if not init_url:
+        raise HTTPException(status_code=404, detail="No init segment for this track")
+    try:
+        data = fetch_segment(init_url)
+    except Exception:
+        logger.exception("Failed to fetch init segment for track %s", track_id)
+        raise HTTPException(status_code=502, detail="Failed to fetch init segment")
+    return Response(content=data, media_type="video/mp4")
+
+
+@app.get("/soundcloud/playback/{track_id}", tags=["soundcloud"])
+def sc_bmx_playback(track_id: str, request: Request) -> BmxPlaybackResponse:
+    """BMX playback response for SoundCloud — speaker calls this to get the stream URL."""
+    _sc_validate_track_id(track_id)
+    info = _sc_ensure_cached(track_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Track not resolved")
+    seg_base = os.environ.get("SOUNDCLOUD_SEG_BASE_URL", settings.base_url.rstrip("/"))
+    playlist_url = f"{seg_base}/soundcloud/playlist/{track_id}.m3u8"
+    stream_list = [
+        Stream(
+            hasPlaylist=True,
+            isRealtime=True,
+            streamUrl=playlist_url,
+        )
+    ]
+    audio = Audio(
+        hasPlaylist=True,
+        isRealtime=True,
+        streamUrl=playlist_url,
+        streams=stream_list,
+    )
+    return BmxPlaybackResponse(
+        audio=audio,
+        imageUrl=info.get("thumbnail", ""),
+        name=info.get("title", "SoundCloud"),
+        streamType="liveRadio",
+    )
 
 
 @app.get("/media/{filename}", tags=["bmx"])

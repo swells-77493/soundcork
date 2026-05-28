@@ -81,9 +81,7 @@ class Speakers:
             if account_id:
                 for device_id in self._datastore.list_devices(account_id):
                     if device_id:
-                        device_info = self._datastore.get_device_info(
-                            account_id, device_id
-                        )
+                        device_info = self._datastore.get_device_info(account_id, device_id)
                         cd = CombinedDevice(
                             # If the IP changes on a device reboot, it would have made a `/power_on`
                             # call to Soundcork, which will have already updated the datastore.
@@ -98,9 +96,7 @@ class Speakers:
                             st_device=None,
                         )
                         combined_devices[device_id] = cd
-                        logger.debug(
-                            f"cd for {device_id} = {combined_devices[device_id]}"
-                        )
+                        logger.debug(f"cd for {device_id} = {combined_devices[device_id]}")
 
         verified = self.soundtouch_devices()
         for key in verified.keys():

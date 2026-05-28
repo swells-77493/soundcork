@@ -293,6 +293,7 @@ const routes = [
   { pattern: /^\/preset\/([^/]+)\/(\d+)\/edit-spotify$/, render: renderEditSpotifyPreset },
   { pattern: /^\/preset\/([^/]+)\/(\d+)\/edit-tunein$/, render: renderEditTuneInPreset },
   { pattern: /^\/preset\/([^/]+)\/(\d+)\/edit-radio$/, render: renderEditInternetRadioPreset },
+  { pattern: /^\/preset\/([^/]+)\/(\d+)\/edit-soundcloud$/, render: renderEditSoundCloudPreset },
   { pattern: /^\/recents\/([^/]+)$/, render: renderRecents },
   { pattern: /^\/remote\/([^/]+)$/, render: renderRemoteControl },
   { pattern: /^\/zones\/([^/]+)$/, render: renderZones },
@@ -884,11 +885,11 @@ function renderSpeakerDetail(main, ip) {
   function renderNowPlaying(np) {
     const section = main.querySelector('#now-playing-section');
     const hasArt = np.art && np.artImageStatus === 'IMAGE_PRESENT';
-    // Use album art if available, fall back to station/container art (album CDN may be dead)
     const artUrl = hasArt ? np.art : np.containerArt;
     const spotifyUri = np.source === 'SPOTIFY' ? decodeSpotifyUri(np.location || '') : null;
     const spotifyUrl = spotifyWebUrl(spotifyUri);
     const fallbackSrc = np.containerArt && np.containerArt !== np.art ? proxyImage(np.containerArt) : '';
+    const isSoundCloud = (np.location || '').startsWith('/v1/playback/station/sc-');
     section.innerHTML = `
       <div class="now-playing">
         ${artUrl
@@ -906,7 +907,7 @@ function renderSpeakerDetail(main, ip) {
           <div class="now-playing-controls-secondary">
             <button class="btn btn-icon btn-sm ${np.shuffleSetting === 'SHUFFLE_ON' ? 'active' : ''}" id="shuffle-btn" title="Shuffle">&#x1F500;</button>
             <button class="btn btn-icon btn-sm ${np.repeatSetting !== 'REPEAT_OFF' ? 'active' : ''}" id="repeat-btn" title="Repeat">${np.repeatSetting === 'REPEAT_ONE' ? '&#x1F502;' : '&#x1F501;'}</button>
-            ${sourceBadge(np.source)}
+            ${isSoundCloud ? '<span class="badge">SoundCloud</span>' : sourceBadge(np.source)}
             ${spotifyUrl ? `<a href="${escapeHtml(spotifyUrl)}" target="_blank" rel="noopener" class="btn btn-sm">Open Spotify</a>` : ''}
           </div>
         </div>
@@ -1121,10 +1122,12 @@ function renderPresetDetail(main, ip, presetId) {
             <button class="btn btn-primary" data-edit="spotify">Set Spotify Preset</button>
             <button class="btn" data-edit="tunein">Set TuneIn Preset</button>
             <button class="btn" data-edit="radio">Set Internet Radio Preset</button>
+            <button class="btn" data-edit="soundcloud">Set SoundCloud Preset</button>
           </div>`;
         container.querySelector('[data-edit="spotify"]').addEventListener('click', () => navigate(`#/preset/${ip}/${presetId}/edit-spotify`));
         container.querySelector('[data-edit="tunein"]').addEventListener('click', () => navigate(`#/preset/${ip}/${presetId}/edit-tunein`));
         container.querySelector('[data-edit="radio"]').addEventListener('click', () => navigate(`#/preset/${ip}/${presetId}/edit-radio`));
+        container.querySelector('[data-edit="soundcloud"]').addEventListener('click', () => navigate(`#/preset/${ip}/${presetId}/edit-soundcloud`));
         return;
       }
 
@@ -1153,6 +1156,7 @@ function renderPresetDetail(main, ip, presetId) {
           <button class="btn btn-sm" data-edit="spotify">Edit (Spotify)</button>
           <button class="btn btn-sm" data-edit="tunein">Edit (TuneIn)</button>
           <button class="btn btn-sm" data-edit="radio">Edit (Radio)</button>
+          <button class="btn btn-sm" data-edit="soundcloud">Edit (SoundCloud)</button>
         </div>
         ${spotifyUrl ? `<a href="${escapeHtml(spotifyUrl)}" target="_blank" rel="noopener" class="btn btn-sm mt-1">Open in Spotify</a>` : ''}`;
 
@@ -1177,6 +1181,7 @@ function renderPresetDetail(main, ip, presetId) {
       container.querySelector('[data-edit="spotify"]').addEventListener('click', () => navigate(`#/preset/${ip}/${presetId}/edit-spotify`));
       container.querySelector('[data-edit="tunein"]').addEventListener('click', () => navigate(`#/preset/${ip}/${presetId}/edit-tunein`));
       container.querySelector('[data-edit="radio"]').addEventListener('click', () => navigate(`#/preset/${ip}/${presetId}/edit-radio`));
+      container.querySelector('[data-edit="soundcloud"]').addEventListener('click', () => navigate(`#/preset/${ip}/${presetId}/edit-soundcloud`));
     } catch (err) {
       showToast(err.message, 'error');
       main.querySelector('#preset-content').innerHTML =
@@ -1482,6 +1487,79 @@ function renderEditInternetRadioPreset(main, ip, presetId) {
     const location = `${baseUrl}/core02/svc-bmx-adapter-orion/prod/orion/station?data=${dataPayload}`;
 
     const xmlBody = `<preset id="${presetId}"><ContentItem source="LOCAL_INTERNET_RADIO" type="stationurl" location="${escapeXml(location)}" isPresetable="true"><itemName>${escapeXml(name)}</itemName><containerArt>${escapeXml(containerArt)}</containerArt></ContentItem></preset>`;
+    try {
+      await api.speakerPost(ip, 'storePreset', xmlBody);
+      showToast('Preset saved', 'success');
+      navigate(`#/preset/${ip}/${presetId}`);
+    } catch (err) { showToast(err.message, 'error'); }
+  });
+}
+
+// -------------------------------------------------------------------
+// 7.7b: Edit SoundCloud Preset
+// -------------------------------------------------------------------
+
+function renderEditSoundCloudPreset(main, ip, presetId) {
+  main.innerHTML = `
+    <div class="page-header">
+      <button class="back-btn" id="back-btn">&#x2190;</button>
+      <h1>SoundCloud Preset ${escapeHtml(presetId)}</h1>
+    </div>
+    <div class="card">
+      <div class="form-group">
+        <label>SoundCloud URL *</label>
+        <input id="sc-url" type="url" placeholder="https://soundcloud.com/artist/track-name">
+      </div>
+      <div id="sc-preview" class="mb-2"></div>
+      <div class="btn-group">
+        <button class="btn" id="sc-resolve">Resolve</button>
+        <button class="btn btn-primary" id="sc-save" disabled>Save Preset</button>
+      </div>
+    </div>`;
+
+  main.querySelector('#back-btn').addEventListener('click', () => navigate(`#/preset/${ip}/${presetId}`));
+
+  let resolved = null;
+
+  main.querySelector('#sc-resolve').addEventListener('click', async () => {
+    const url = main.querySelector('#sc-url').value.trim();
+    if (!url) { showToast('SoundCloud URL is required', 'error'); return; }
+
+    const previewEl = main.querySelector('#sc-preview');
+    previewEl.innerHTML = '<div class="spinner"></div>';
+    main.querySelector('#sc-save').disabled = true;
+
+    try {
+      const resp = await fetch(`/webui/api/soundcloud/resolve?url=${encodeURIComponent(url)}`);
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+        throw new Error(err.detail || 'Resolve failed');
+      }
+      resolved = await resp.json();
+      const dur = resolved.duration ? `${Math.floor(resolved.duration / 60)}:${String(Math.floor(resolved.duration % 60)).padStart(2, '0')}` : '?';
+      previewEl.innerHTML = `
+        <div class="card" style="display:flex;gap:1rem;align-items:center;padding:0.75rem">
+          ${resolved.thumbnail
+            ? `<img src="${proxyImage(resolved.thumbnail)}" style="width:80px;height:80px;border-radius:var(--radius-sm);object-fit:cover" onerror="this.style.display='none'">`
+            : ''}
+          <div>
+            <strong>${escapeHtml(resolved.title)}</strong><br>
+            <span class="text-hint">${escapeHtml(resolved.uploader)} &middot; ${dur} &middot; ${resolved.segmentCount} segments</span>
+          </div>
+        </div>`;
+      main.querySelector('#sc-save').disabled = false;
+    } catch (err) {
+      previewEl.innerHTML = `<div class="empty-state"><p>${escapeHtml(err.message)}</p></div>`;
+    }
+  });
+
+  main.querySelector('#sc-save').addEventListener('click', async () => {
+    if (!resolved) return;
+    const location = `/v1/playback/station/sc-${escapeXml(resolved.trackId)}`;
+    const containerArt = resolved.thumbnail || '';
+    const name = resolved.title || 'SoundCloud';
+
+    const xmlBody = `<preset id="${presetId}"><ContentItem source="TUNEIN" type="stationurl" location="${escapeXml(location)}" isPresetable="true"><itemName>${escapeXml(name)}</itemName><containerArt>${escapeXml(containerArt)}</containerArt></ContentItem></preset>`;
     try {
       await api.speakerPost(ip, 'storePreset', xmlBody);
       showToast('Preset saved', 'success');
