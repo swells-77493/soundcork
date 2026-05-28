@@ -1,5 +1,6 @@
 import logging
 import re
+import urllib.parse
 import urllib.request
 
 import yt_dlp
@@ -9,8 +10,29 @@ logger = logging.getLogger(__name__)
 _WINDOW_SIZE = 30  # segments per playlist window (~5 min at 10s each)
 _OVERLAP = 3  # segments of overlap between windows
 
+_ALLOWED_SC_DOMAINS = {"soundcloud.com", "www.soundcloud.com", "m.soundcloud.com"}
+_ALLOWED_CDN_DOMAINS = {".sndcdn.com", ".soundcloud.com"}
+
+
+def _validate_soundcloud_url(url: str) -> None:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Invalid URL scheme: {parsed.scheme}")
+    if parsed.hostname not in _ALLOWED_SC_DOMAINS:
+        raise ValueError(f"Not a SoundCloud URL: {parsed.hostname}")
+
+
+def _validate_cdn_url(url: str) -> None:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Invalid CDN URL scheme: {parsed.scheme}")
+    hostname = parsed.hostname or ""
+    if not any(hostname == d.lstrip(".") or hostname.endswith(d) for d in _ALLOWED_CDN_DOMAINS):
+        raise ValueError(f"CDN URL not on allowed domain: {hostname}")
+
 
 def resolve_track(url: str) -> dict:
+    _validate_soundcloud_url(url)
     """Resolve a SoundCloud URL to track metadata and HLS playlist info."""
     ydl_opts = {
         "format": "bestaudio[acodec=mp3][protocol=m3u8_native]/hls_aac_96k/best",
@@ -96,4 +118,5 @@ def build_m3u8_window(
 
 def fetch_segment(url: str) -> bytes:
     """Fetch a single audio segment from the CDN."""
+    _validate_cdn_url(url)
     return urllib.request.urlopen(url, timeout=30).read()
