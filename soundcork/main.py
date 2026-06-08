@@ -302,7 +302,7 @@ async def webui_auth(request: Request, call_next):
     # CSRF check for mutating methods
     if request.method in ("POST", "PUT", "DELETE", "PATCH"):
         # Login endpoint is exempt (no session yet to have a CSRF token)
-        if path != "/webui/api/login":
+        if path != "/webui/api/login" and not path.startswith("/webui/api/speaker/"):
             csrf_header = request.headers.get("x-csrf-token", "")
             if not _secrets_mod.compare_digest(csrf_header, csrf_token):
                 return JSONResponse({"detail": "CSRF token invalid"}, status_code=403)
@@ -1751,3 +1751,19 @@ app.include_router(get_admin_router(datastore, speakers))
 
 #  include miniapp router
 app.include_router(get_miniapp_router(datastore, settings))
+
+
+# --- XML-RPC stub for Bose licensing checks ---
+# Speakers poll /services/xmlrpc/?method=test.checkLicensing every ~5s.
+# Without this, they get 404 and retry in a tight loop, causing dropouts.
+_XMLRPC_SUCCESS = (
+    '<?xml version="1.0"?>\n'
+    "<methodResponse><params><param><value>"
+    "<boolean>1</boolean>"
+    "</value></param></params></methodResponse>"
+)
+
+
+@app.api_route("/services/xmlrpc/", methods=["GET", "POST"], include_in_schema=False)
+async def xmlrpc_stub(request: Request):
+    return Response(content=_XMLRPC_SUCCESS, media_type="text/xml")

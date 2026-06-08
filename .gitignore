@@ -1,3 +1,4 @@
+data/
 # Override config files
 private.py
 .env.private
